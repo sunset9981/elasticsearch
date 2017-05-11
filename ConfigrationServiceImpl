@@ -1,0 +1,162 @@
+package cn.com.nike.service.impl;
+
+import java.io.IOException;
+import java.io.InputStream;
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Properties;
+
+import javax.annotation.Resource;
+
+import org.elasticsearch.index.query.QueryBuilder;
+import org.elasticsearch.index.query.QueryBuilders;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.stereotype.Service;
+
+import cn.com.nike.dao.EntityDao;
+import cn.com.nike.service.ConfigrationService;
+import cn.com.nike.util.UtilDateTime;
+import net.sf.json.JSONObject;
+
+/**
+ * @author alex.tang 2017.4.17
+ *
+ */
+@Service("ConfigrationService")
+public class ConfigrationServiceImpl implements ConfigrationService {
+	private static final String index = "configration";
+	private static final String type = "configration";
+	private String FileId = "id";
+	private String FileName = "threshold";
+
+	@Resource
+	private EntityDao entityDao;
+	private static final Logger logger = LoggerFactory.getLogger(ConfigrationServiceImpl.class);
+
+	// read properties
+	protected Properties getPropertiesFile() {
+		Properties properties = new Properties();
+		InputStream inputStream = this.getClass().getResourceAsStream("/properties/aoc-config.properties");
+		try {
+			properties.load(inputStream);
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+		return properties;
+	}
+
+	// city Alert-Percentage
+	public Map<String, String> getAlertPercentage() throws Exception {
+		Map<String, String> map = new HashMap<String, String>();
+		String getValue = getPropertiesFile().getProperty("alert-percentage");
+		String[] split = getValue.split("，");
+		for (String str : split) {
+			String[] split2 = str.split("：");
+			if (!map.containsKey(split2[0])) {
+				map.put(split2[0], split2[1]);
+			}
+		}
+		return map;
+	}
+
+	// get Concept-Type
+	public Map<String, ArrayList<String>> getConceptType() throws Exception {
+		Map<String, ArrayList<String>> map = new HashMap<String, ArrayList<String>>();
+		ArrayList<String> list = new ArrayList<String>();
+		Properties properties = new Properties();
+		InputStream inputStream = this.getClass().getResourceAsStream("/properties/aoc-config.properties");
+		try {
+			properties.load(inputStream);
+			String getString = properties.getProperty("Concept-Type");
+			String[] split = getString.split(",");
+			for (String str : split) {
+				list.add(str);
+			}
+			if (!map.containsKey("Concept-Type")) {
+				map.put("Concept-Type", list);
+			}
+		} catch (IOException e) {
+			e.printStackTrace();
+		}
+		return map;
+	}
+
+	// FW-RMB换算美元的公式
+	public BigDecimal operationFW(String RMB) throws ArithmeticException {
+		String getValue = getPropertiesFile().getProperty("FW");
+		String FW[] = getValue.split(",");
+		BigDecimal b1 = new BigDecimal(RMB);
+		BigDecimal b2 = new BigDecimal(FW[0]);
+		BigDecimal b3 = new BigDecimal(FW[1]);
+		BigDecimal b4 = new BigDecimal(FW[2]);
+		BigDecimal b5 = b1.divide(b2, 2, BigDecimal.ROUND_HALF_UP).divide(b3, 2, BigDecimal.ROUND_HALF_UP).multiply(b4);
+		BigDecimal b6 = b5.setScale(2, BigDecimal.ROUND_HALF_UP);
+		return b6;
+	}
+
+	// APP-RMB换算美元的公式
+	public BigDecimal operationAPP(String RMB) throws ArithmeticException {
+		String getValue = getPropertiesFile().getProperty("APP");
+		String APP[] = getValue.split(",");
+		BigDecimal b1 = new BigDecimal(RMB);
+		BigDecimal b2 = new BigDecimal(APP[0]);
+		BigDecimal b3 = new BigDecimal(APP[1]);
+		BigDecimal b4 = new BigDecimal(APP[2]);
+		BigDecimal b5 = b1.divide(b2, 2, BigDecimal.ROUND_HALF_UP).divide(b3, 2, BigDecimal.ROUND_HALF_UP).multiply(b4);
+		BigDecimal b6 = b5.setScale(2, BigDecimal.ROUND_HALF_UP);
+		return b6;
+	}
+
+	// EQP-RMB换算美元的公式
+	public BigDecimal operationEQP(String RMB) throws ArithmeticException {
+		String getValue = getPropertiesFile().getProperty("EQP");
+		String EQP[] = getValue.split(",");
+		BigDecimal b1 = new BigDecimal(RMB);
+		BigDecimal b2 = new BigDecimal(EQP[0]);
+		BigDecimal b3 = new BigDecimal(EQP[1]);
+		BigDecimal b4 = new BigDecimal(EQP[2]);
+		BigDecimal b5 = b1.divide(b2, 2, BigDecimal.ROUND_HALF_UP).divide(b3, 2, BigDecimal.ROUND_HALF_UP).multiply(b4);
+		BigDecimal b6 = b5.setScale(2, BigDecimal.ROUND_HALF_UP);
+		return b6;
+	}
+
+	// 设置阀值
+	public Map<String, Object> saveThreshold(String file) throws Exception {
+		Map<String, Object> map = new HashMap<String, Object>();
+		try {
+			map.put(FileName, file);
+			String value = entityDao.createEntity(index, type, map);
+			logger.info(UtilDateTime.getTimestamp(System.currentTimeMillis()) + ".Threshold has been saved...");
+			map.put(FileId, value);
+		} catch (Exception e) {
+			logger.error(UtilDateTime.getTimestamp(System.currentTimeMillis()) + ".saveThreshold.exception...异常信息:{}",
+					e);
+		}
+		return map;
+	}
+
+	@SuppressWarnings("unchecked")
+	public List<JSONObject> searchThreshold(String file) {
+		Map<String, String> map = new HashMap<String, String>();
+		Map<String, Object> selmap = new HashMap<String, Object>();
+		List<JSONObject> resList = new ArrayList<JSONObject>();
+		map.put("threshold", file);
+		QueryBuilder queryBuilder = QueryBuilders.commonTermsQuery("threshold.keyword", file);
+		try {
+			selmap = entityDao.searcher(index, type, null, queryBuilder);
+			resList = (List<JSONObject>) selmap.get("result");
+		} catch (Exception e) {
+			e.printStackTrace();
+		}
+		return resList;
+	}
+
+	public void deleteThreshold(String id) {
+		entityDao.deleteEntity(index, type, id);
+	}
+
+}
