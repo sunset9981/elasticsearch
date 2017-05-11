@@ -1,0 +1,53 @@
+package cn.com.nike.dao;
+
+import java.util.List;
+import java.util.Map;
+
+import org.elasticsearch.index.query.QueryBuilder;
+
+import cn.com.nike.util.Pagination;
+import net.sf.json.JSONObject;
+
+public interface EntityDao {
+
+	public String createEntity(String index, String type, Map<String, Object> entity);
+
+	public int updateEntity(String index, String type, String id, Map<String, Object> entity);
+
+	public int deleteEntity(String index, String type, String id);
+
+	public Map<String, Object> findEntityById(String index, String type, String id);
+
+	boolean extendid(String index, String type, String id);
+
+	// 自定义主键的添加方法
+	public String createJson(String index, String type, String id, List<JSONObject> list);// index=xxxxtemp
+
+	public String createJson(String index, String type, List<JSONObject> list);// index=xxxxtemp
+
+	public String createObj(String index, String type, List<Object> objects) throws Exception;// index=xxxxtemp
+
+	public Map<String, Object> searcher(String index, String type, Pagination page, QueryBuilder queryBuilder) throws Exception;
+
+	public boolean delete(String indexname);
+
+	boolean exindex(String index);
+
+	public int sumQTY(String index, String type, String name) throws Exception;
+
+	public Map<String, Object> searchSKUErrorType(String index, String type, Pagination page, String require) throws Exception;
+
+	Map<String, Object> searchErrorType(String index, String type, Pagination page, Map<String, String> require) throws Exception;
+
+	// 将一个index下的type的某些值复制到另一个index的type下，要求：在fromindex里面有外键是toindex的主键
+	boolean updatedatebyname(String fromindex, String fromtype, String fromname, String toindex, String totype, String toname);
+
+	int count(String index, String type, QueryBuilder queryBuilder);
+
+	int sumQTYandPrice(String index, String type, String price, String QTY, QueryBuilder queryBuilder);
+
+	String copyFromTemp(String index);
+
+	Map<String, Object> searcher(String index, String type, Pagination page, Map<String, String> require) throws Exception;
+
+}
