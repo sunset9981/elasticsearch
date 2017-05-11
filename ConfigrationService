@@ -1,0 +1,39 @@
+package cn.com.nike.service;
+
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+
+import net.sf.json.JSONObject;
+
+/**
+ * @author alex.tang 2017.4.17
+ *
+ */
+public interface ConfigrationService {
+
+	// 取city Alert-Percentage
+	Map<String, String> getAlertPercentage() throws Exception;
+
+	// get Concept-Type
+	Map<String, ArrayList<String>> getConceptType() throws Exception;
+
+	// FW-RMB换算美元的公式
+	BigDecimal operationFW(String RMB) throws ArithmeticException;
+
+	// APP-RMB换算美元的公式
+	BigDecimal operationAPP(String RMB) throws ArithmeticException;
+
+	// EQP-RMB换算美元的公式
+	BigDecimal operationEQP(String RMB) throws ArithmeticException;
+
+	// 设置阀值
+	Map<String, Object> saveThreshold(String file) throws Exception;
+
+	// 查询阀值
+	List<JSONObject> searchThreshold(String file);
+
+	// 删除
+	void deleteThreshold(String id);
+}
