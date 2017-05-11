@@ -1,0 +1,601 @@
+package cn.com.nike.dao.impl;
+
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
+
+import org.elasticsearch.action.admin.indices.delete.DeleteIndexResponse;
+import org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsRequest;
+import org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsResponse;
+import org.elasticsearch.action.bulk.BulkRequestBuilder;
+import org.elasticsearch.action.bulk.BulkResponse;
+import org.elasticsearch.action.delete.DeleteResponse;
+import org.elasticsearch.action.get.GetResponse;
+import org.elasticsearch.action.index.IndexResponse;
+import org.elasticsearch.action.search.SearchResponse;
+import org.elasticsearch.action.search.SearchType;
+import org.elasticsearch.action.update.UpdateResponse;
+import org.elasticsearch.client.Client;
+import org.elasticsearch.common.unit.TimeValue;
+import org.elasticsearch.index.query.BoolQueryBuilder;
+import org.elasticsearch.index.query.QueryBuilder;
+import org.elasticsearch.index.query.QueryBuilders;
+import org.elasticsearch.rest.RestStatus;
+import org.elasticsearch.search.SearchHit;
+import org.elasticsearch.search.SearchHits;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Repository;
+
+import cn.com.nike.dao.EntityDao;
+import cn.com.nike.util.Locker;
+import cn.com.nike.util.Pagination;
+import cn.com.nike.util.UtilDateTime;
+import cn.com.nike.util.Constants.ConstantsData;
+import net.sf.json.JSONObject;
+
+@Repository("EntityDao")
+public class EntityDaoImpl implements EntityDao {
+
+	private static final Logger logger = LoggerFactory.getLogger(EntityDaoImpl.class);
+
+	@Autowired
+	private Client client;
+
+	@Override
+	public String createEntity(String index, String type, Map<String, Object> entity) {
+
+		entity.put(ConstantsData.CREATE_TIME, UtilDateTime.nowDateString(UtilDateTime.DATE_TIME_FORMAT));
+		entity.put(ConstantsData.UPDATE_TIME, UtilDateTime.nowDateString(UtilDateTime.DATE_TIME_FORMAT));
+
+		IndexResponse response = client.prepareIndex(index, type).setSource(entity).get();
+		String result = "error";
+		if (RestStatus.OK.equals(response.status()) || RestStatus.CREATED.equals(response.status())) {
+			result = response.getId();
+		}
+		return result;
+	}
+
+	@Override
+	public int updateEntity(String index, String type, String id, Map<String, Object> entity) {
+
+		entity.put(ConstantsData.UPDATE_TIME, UtilDateTime.nowDateString(UtilDateTime.DATE_TIME_FORMAT));
+
+		UpdateResponse response = client.prepareUpdate(index, type, id).setDoc(entity).get();
+		int result = -1;
+		if (RestStatus.OK.equals(response.status())) {
+			result = 1;
+		}
+		return result;
+	}
+
+	@Override
+	public int deleteEntity(String index, String type, String id) {
+		DeleteResponse response = client.prepareDelete(index, type, id).get();
+		int result = -1;
+		if (RestStatus.OK.equals(response.status())) {
+			result = 1;
+		}
+		return result;
+	}
+
+	@Override
+	public Map<String, Object> findEntityById(String index, String type, String id) {
+		GetResponse response = client.prepareGet(index, type, id).get();
+		return response.getSource();
+	}
+
+	@SuppressWarnings("unused")
+	@Override
+	public String createJson(String index, String type, List<JSONObject> list) {
+		Locker lock = new Locker();
+		lock.lock();
+		List<JSONObject> objects = list;
+		//批量创建索引
+		BulkRequestBuilder bulkRequest = client.prepareBulk();
+		BulkResponse bulkResponse = null;
+		int count = 0;
+		for (int i = 0; i < objects.size(); i++) {
+
+			objects.get(i).put(ConstantsData.CREATE_TIME, UtilDateTime.nowDateString(UtilDateTime.DATE_TIME_FORMAT));
+			objects.get(i).put(ConstantsData.UPDATE_TIME, UtilDateTime.nowDateString(UtilDateTime.DATE_TIME_FORMAT));
+
+			String data = objects.get(i).toString();
+
+			bulkRequest.add(client.prepareIndex(index, type).setId(Integer.toString(i + 1)).setSource(data));
+			count++;
+			if (count % 1000 == 0) {
+				bulkRequest.execute().actionGet();
+				logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + index + "已经提交了"
+						+ count + "条数据");
+			}
+		}
+		bulkRequest.execute().actionGet();
+		logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "插入完毕");
+		bulkResponse = bulkRequest.get();
+		logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "是否正确:"
+				+ !bulkResponse.hasFailures());
+		if (bulkResponse.hasFailures()) {
+			logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "error");
+			logger.info(bulkResponse.buildFailureMessage());
+			return "error";
+		} else {
+			boolean result = exindex(index.substring(0, index.length() - 4));
+			if (result == true) {
+				delete(index.substring(0, index.length() - 4));
+			}
+			String copyresult = copyFromTemp(index);
+			if (copyresult == "success") {
+				delete(index);
+				lock.unLock();
+				return "success";
+			} else {
+				lock.unLock();
+				return "error";
+			}
+		}
+	}
+
+	public String createJson(String index, String type, String id, List<JSONObject> list) {
+		Locker lock = new Locker();
+		lock.lock();
+		List<JSONObject> objects = list;
+		BulkRequestBuilder bulkRequest = client.prepareBulk();
+		BulkResponse bulkResponse = null;
+		int count = 0;
+		for (int i = 0; i < objects.size(); i++) {
+
+			objects.get(i).put(ConstantsData.CREATE_TIME, UtilDateTime.nowDateString(UtilDateTime.DATE_TIME_FORMAT));
+			objects.get(i).put(ConstantsData.UPDATE_TIME, UtilDateTime.nowDateString(UtilDateTime.DATE_TIME_FORMAT));
+
+			String data = objects.get(i).toString();
+			String ID = objects.get(i).get(id).toString();
+			bulkRequest.add(client.prepareIndex(index, type).setId(ID).setSource(data));
+			count++;
+			if (count % 1000 == 0) {
+				bulkRequest.execute().actionGet();
+				logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + index + "已经提交了"
+						+ count + "条数据");
+			}
+		}
+		bulkRequest.execute().actionGet();
+		logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "插入完毕");
+		bulkResponse = bulkRequest.get();
+		logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "是否正确:"
+				+ !bulkResponse.hasFailures());
+		if (bulkResponse.hasFailures()) {
+			logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "error");
+			logger.info(bulkResponse.buildFailureMessage());
+			return "error";
+		} else {
+			boolean result = exindex(index.substring(0, index.length() - 4));
+			if (result == true) {
+				delete(index.substring(0, index.length() - 4));
+			}
+			String copyresult = copyFromTemp(index);
+			if (copyresult == "success") {
+				delete(index);
+				lock.unLock();
+				return "success";
+			} else {
+				lock.unLock();
+				return "error";
+			}
+		}
+	}
+
+	@Override
+	public String createObj(String index, String type, List<Object> objects) throws Exception {
+		List<JSONObject> list = new ArrayList<>();
+		for (Object object : objects) {
+			JSONObject jsonobject = (JSONObject) object;
+			jsonobject.put(ConstantsData.CREATE_TIME, UtilDateTime.nowDateString(UtilDateTime.DATE_TIME_FORMAT));
+			jsonobject.put(ConstantsData.UPDATE_TIME, UtilDateTime.nowDateString(UtilDateTime.DATE_TIME_FORMAT));
+			list.add(jsonobject);
+		}
+		String result = createJson(index, type, list);
+		return result;
+	}
+
+	@Override
+	public String copyFromTemp(String index) {
+		String indexFrom = index;
+		String indexTo = indexFrom.substring(0, indexFrom.length() - 4);
+		int timeMillis = 60000;
+		SearchResponse scrollResp = client.prepareSearch(indexFrom).setScroll(new TimeValue(timeMillis)).setSize(1000)
+				.execute().actionGet();
+		while (true) {
+			BulkRequestBuilder bulkRequest = client.prepareBulk();
+			SearchHit[] hits = scrollResp.getHits().getHits();
+			logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "里面有" + hits.length
+					+ "条数据");
+			if (hits.length <= 0) {
+				return "error";
+			} else if (hits.length > 0) {
+				int count = 0;
+				for (int i = 0; i < hits.length; i++) {
+					count++;
+					bulkRequest.add(client.prepareIndex(indexTo, hits[i].getType(), hits[i].getId())
+							.setSource(hits[i].getSource()));
+					if (count % 1000 == 0) {
+						bulkRequest.execute().actionGet();
+						logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "已经提交了"
+								+ count + "条数据");
+					}
+				}
+				bulkRequest.execute().actionGet();
+				logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "插入完毕");
+				scrollResp = client.prepareSearchScroll(scrollResp.getScrollId()).setScroll(new TimeValue(timeMillis))
+						.execute().actionGet();
+				if (scrollResp.getHits().getHits().length == 0) {
+					break;
+				}
+			}
+		}
+		return "success";
+	}
+
+	@Override
+	public Map<String, Object> searcher(String index, String type, Pagination page, QueryBuilder queryBuilder) throws Exception {
+		SearchResponse searchResponse = null;
+		Map<String, Object> map = new HashMap<>();
+		if (page == null) {
+			searchResponse = client.prepareSearch(index).setTypes(type).setQuery(queryBuilder)
+					.setSearchType(SearchType.DEFAULT).setScroll(new TimeValue(60000)).setSize(10000).get();
+			logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "查询：" + index + "下的\r\n"
+					+ queryBuilder);
+			List<JSONObject> list = new ArrayList<>();
+			SearchHits hits = searchResponse.getHits();
+			long total = hits.getTotalHits();
+			logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "查询到：" + total + "条。");
+			while (true) {
+				SearchHit[] searchHits = hits.hits();
+				for (SearchHit s : searchHits) {
+					String result = s.getSourceAsString().toString();
+					JSONObject jsonObject = JSONObject.fromObject(result);
+					jsonObject.put("id", s.getId());
+					list.add(jsonObject);
+				}
+				searchResponse = client.prepareSearchScroll(searchResponse.getScrollId())
+						.setScroll(new TimeValue(600000)).get();
+				if (searchResponse.getHits().getHits().length == 0) {
+					break;
+				}
+			}
+			map.put("total", total);
+			map.put("result", list);
+			return map;
+		} else {
+			Map<String, Object> map2 = searcherbypagebyqueryBuilder(index, type, page, queryBuilder);
+			return map2;
+		}
+	}
+
+	@SuppressWarnings("unused")
+	public Map<String, Object> searcherbypagebyqueryBuilder(String index, String type, Pagination page, QueryBuilder queryBuilder) throws Exception {
+		Map<String, Object> map = new HashMap<>();
+		Integer pageNo = 0;
+		Integer pageSize = 0;
+		Integer pageno = page.getPageNo();
+		pageSize = page.getPageSize();
+		if (pageno <= 0) {
+			pageNo = 1;
+		} else {
+			pageNo = pageno;
+		}
+		SearchResponse searchResponse = client.prepareSearch(index).setTypes(type).setQuery(queryBuilder)
+				.setSearchType(SearchType.QUERY_THEN_FETCH).setFrom((pageNo - 1) * pageSize).setSize(pageSize)
+				.setScroll(new TimeValue(60000)).execute().get();
+		List<JSONObject> list = new ArrayList<>();
+		SearchHits hits = searchResponse.getHits();
+		long total = hits.getTotalHits();
+		logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "查询到：" + total + "条。");
+		SearchHit[] searchHits = hits.hits();
+		for (SearchHit s : searchHits) {
+			String result = s.getSourceAsString().toString();
+			JSONObject jsonObject = JSONObject.fromObject(result);
+			jsonObject.put("id", s.getId());
+			list.add(jsonObject);
+		}
+		map.put("total", total);
+		map.put("result", list);
+		return map;
+	}
+
+	public boolean exindex(String index) {
+		logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "判断:" + index + "是否存在");
+		IndicesExistsRequest request = new IndicesExistsRequest(index);
+		IndicesExistsResponse response = client.admin().indices().exists(request).actionGet();
+		if (response.isExists()) {
+			logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "查询到：" + index + "存在。");
+			return true;
+		} else {
+			logger.info(
+					new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "查询到：" + index + "不存在。");
+			return false;
+		}
+	}
+
+	@Override
+	public boolean delete(String index) {
+		DeleteIndexResponse dResponse = client.admin().indices().prepareDelete(index).execute().actionGet();
+		if (dResponse.isAcknowledged()) {
+			logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + index + "删除成功");
+			return true;
+		} else {
+			logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + index + "删除失败");
+			return false;
+		}
+	}
+
+	@Override
+	public Map<String, Object> searcher(String index, String type, Pagination page, Map<String, String> require) throws Exception {
+		Integer pageNo = null;
+		Integer pageSize = null;
+		if (page == null) {
+			pageNo = 1;
+			pageSize = 1000;
+		} else {
+			pageNo = page.getPageNo();
+			pageSize = page.getPageSize();
+			pageNo = null == pageNo ? 1 : pageNo;
+		}
+		QueryBuilder queryBuilder = null;
+		Map<String, Object> map = new HashMap<>();
+		List<QueryBuilder> querys = new ArrayList<>();
+		if (require == null) {
+			queryBuilder = null;
+		} else {
+			if (require.size() == 1) {
+				Iterator<?> iterator = require.entrySet().iterator();
+				Entry<?, ?> entry = (Entry<?, ?>) iterator.next();
+				String string1 = entry.getKey().toString();
+				String string2 = entry.getValue().toString();
+				if (string2 == null || "".equals(string2)) {
+					queryBuilder = null;
+				}
+				if (string2.contains("*")) {
+					queryBuilder = QueryBuilders.wildcardQuery(string1, string2.toLowerCase());
+				} else {
+					queryBuilder = QueryBuilders.matchPhraseQuery(string1, string2.toLowerCase());
+				}
+			} else if (require.size() > 1) {
+				queryBuilder = QueryBuilders.boolQuery();
+				for (int i = 0; i < require.size(); i++) {
+					Iterator<?> iterator = require.entrySet().iterator();
+					while (iterator.hasNext()) {
+						Entry<?, ?> entry = (Entry<?, ?>) iterator.next();
+						String string1 = (String) entry.getKey();
+						String string2 = (String) entry.getValue();
+						if (string2 != null || "".equals(string2)) {
+							if (string2.contains("*")) {
+								QueryBuilder query = QueryBuilders.wildcardQuery(string1, string2.toLowerCase());
+								querys.add(query);
+							} else {
+								QueryBuilder query = QueryBuilders.matchPhraseQuery(string1, string2.toLowerCase());
+								querys.add(query);
+							}
+						}
+					}
+				}
+				for (int i = 0; i < querys.size(); i++) {
+					((BoolQueryBuilder) queryBuilder).must(querys.get(i));
+				}
+			}
+		}
+		SearchResponse searchResponse = client.prepareSearch(index).setTypes(type).setQuery(queryBuilder)
+				.setSearchType(SearchType.QUERY_THEN_FETCH).setFrom((pageNo - 1) * pageSize).setSize(pageSize).execute()
+				.get();
+		logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "查询：" + index + "下的"
+				+ require + "条件");
+		List<JSONObject> list = new ArrayList<>();
+		SearchHits hits = searchResponse.getHits();
+		long total = hits.getTotalHits();
+		logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "查询到：" + total + "条。");
+		SearchHit[] searchHits = hits.hits();
+		for (SearchHit s : searchHits) {
+			String result = s.getSourceAsString().toString();
+			JSONObject jsonObject = JSONObject.fromObject(result);
+			jsonObject.put("id", s.getId());
+			list.add(jsonObject);
+		}
+		map.put("total", total);
+		map.put("result", list);
+		return map;
+	}
+
+	@Override
+	public int sumQTY(String index, String type, String name) throws Exception {
+		int sum = 0;
+		QueryBuilder queryBuilder = null;
+		SearchResponse searchResponse = client.prepareSearch(index).setTypes(type).setQuery(queryBuilder)
+				.setSearchType(SearchType.DEFAULT).setScroll(new TimeValue(60000)).setSize(1000).get();
+		logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "查询：" + index + "下的");
+		List<JSONObject> list = new ArrayList<>();
+		SearchHits hits = searchResponse.getHits();
+		long total = hits.getTotalHits();
+		logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "查询到：" + total + "条。");
+		SearchHit[] searchHits = hits.hits();
+		while (true) {
+			for (int i = 0; i < searchHits.length; i++) {
+				String result = searchHits[i].getSourceAsString().toString();
+				JSONObject jsonObject = JSONObject.fromObject(result);
+				String QTY = jsonObject.get(name).toString();
+				logger.debug("在第" + (i + 1) + "条记录中" + name + "数量" + QTY);
+				sum += Integer.parseInt(QTY);
+			}
+			searchResponse = client.prepareSearchScroll(searchResponse.getScrollId()).setScroll(new TimeValue(600000))
+					.execute().actionGet();
+			if (searchResponse.getHits().getHits().length == 0) {
+				break;
+			}
+		}
+		return sum;
+	}
+
+	@Override
+	public Map<String, Object> searchSKUErrorType(String index, String type, Pagination page, String require) throws Exception {
+		Locker lock = new Locker();
+		lock.lock();
+		Integer pageNo = page.getPageNo();
+		Integer pageSize = page.getPageSize();
+		pageNo = null == pageNo ? 1 : pageNo;
+		Map<String, Object> map = new HashMap<>();
+
+		QueryBuilder queryBuilder = QueryBuilders.wildcardQuery("SKU_NO", require);
+
+		QueryBuilder postFilter = QueryBuilders.termQuery("Error_Type.keyword", "drop");
+				//.should(QueryBuilders.termQuery("Error_Type.keyword", "drop"));
+				//.should(QueryBuilders.termQuery("Error_Type.keyword", "sku not found"));
+		SearchResponse searchResponse = client.prepareSearch(index).setTypes(type).setQuery(queryBuilder)
+				.setPostFilter(postFilter).setSearchType(SearchType.QUERY_THEN_FETCH).setFrom((pageNo - 1) * pageSize)
+				.setSize(pageSize).execute().get();
+		logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "查询：" + index + "下的"
+				+ require + "条件");
+		List<JSONObject> list = new ArrayList<>();
+		SearchHits hits = searchResponse.getHits();
+		long total = hits.getTotalHits();
+		logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "查询到：" + total + "条。");
+		SearchHit[] searchHits = hits.hits();
+		for (SearchHit s : searchHits) {
+			String result = s.getSourceAsString().toString();
+			Object object = result;
+			JSONObject jsonObject = JSONObject.fromObject(result);
+			list.add(jsonObject);
+			jsonObject.put("id", s.getId());
+		}
+		lock.unLock();
+		map.put("total", total);
+		map.put("result", list);
+		return map;
+	}
+
+	@Override
+	public Map<String, Object> searchErrorType(String index, String type, Pagination page, Map<String, String> require) throws Exception {
+		Integer pageNo = null;
+		Integer pageSize = null;
+		Map<String, Object> map = new HashMap<>();
+
+		String requireValue1 = require.get("PO_No");
+		String requireValue2 = require.get("Error Type");
+
+		QueryBuilder queryBuilder = null;
+		if (!(requireValue1 == null || requireValue1.equals(""))) {
+			queryBuilder = QueryBuilders.boolQuery().must(QueryBuilders.wildcardQuery("PO_No", requireValue1))
+					.must(QueryBuilders.wildcardQuery("Error Type", requireValue2));
+		} else if ("T".equals(requireValue2)) {
+			queryBuilder = QueryBuilders.matchQuery("Error Type", "");
+		} else if ("F".equals(requireValue2)) {
+			queryBuilder = QueryBuilders.wildcardQuery("Error Type", "*");
+		} else {
+			queryBuilder = QueryBuilders.wildcardQuery("Error Type", requireValue2);
+		}
+
+		SearchResponse searchResponse = null;
+		if (page == null) {
+			searchResponse = client.prepareSearch(index).setTypes(type).setQuery(queryBuilder)
+					.setSearchType(SearchType.QUERY_THEN_FETCH).execute().get();
+		} else {
+			pageNo = page.getPageNo();
+			pageSize = page.getPageSize();
+			pageNo = null == pageNo ? 1 : pageNo;
+			searchResponse = client.prepareSearch(index).setTypes(type).setQuery(queryBuilder)
+					.setSearchType(SearchType.QUERY_THEN_FETCH).setFrom((pageNo - 1) * pageSize).setSize(pageSize)
+					.execute().get();
+		}
+
+		logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "查询：" + index + "下的"
+				+ require + "条件");
+		List<JSONObject> list = new ArrayList<>();
+		SearchHits hits = searchResponse.getHits();
+		long total = hits.getTotalHits();
+		logger.info(new SimpleDateFormat("yyyy-MM-dd:HH-mm-ss").format(new Date()) + "\t" + "查询到：" + total + "条。");
+		SearchHit[] searchHits = hits.hits();
+		for (SearchHit s : searchHits) {
+			String result = s.getSourceAsString().toString();
+			Object object = result;
+			JSONObject jsonObject = JSONObject.fromObject(result);
+			jsonObject.put("id", s.getId());
+			list.add(jsonObject);
+		}
+		map.put("total", total);
+		map.put("result", list);
+		return map;
+	}
+
+	public boolean updatedatebyname(String fromindex, String fromtype, String fromname, String toindex, String totype, String toname) {
+		QueryBuilder queryBuilder = null;
+		SearchResponse searchResponse = client.prepareSearch(fromindex).setTypes(fromtype).setQuery(queryBuilder)
+				.setSearchType(SearchType.DEFAULT).setScroll(new TimeValue(60000)).setSize(1000).get();
+		SearchHits hits = searchResponse.getHits();
+		SearchHit[] searchHits = hits.hits();
+		while (true) {
+			for (SearchHit s : searchHits) {
+				String result = (String) s.getSourceAsString().toString();
+				JSONObject jsonObject = JSONObject.fromObject(result);
+				Map<String, Object> entity = new HashMap<String, Object>();
+				entity.put(toname, jsonObject.get(fromname));
+				boolean extendidresult = extendid(toindex, totype, s.getId());
+				if (extendidresult == true) {
+					updateEntity(toindex, totype, s.getId(), entity);
+				}
+			}
+			searchResponse = client.prepareSearchScroll(searchResponse.getScrollId()).setScroll(new TimeValue(600000))
+					.get();
+			if (searchResponse.getHits().getHits().length == 0) {
+				break;
+			}
+		}
+		return true;
+	}
+
+	public int count(String index, String type, QueryBuilder queryBuilder) {
+		SearchResponse searchResponse = client.prepareSearch(index).setTypes(type).setQuery(queryBuilder)
+				.setSearchType(SearchType.DEFAULT).setScroll(new TimeValue(60000)).setSize(1000).get();
+		SearchHits hits = searchResponse.getHits();
+		SearchHit[] searchHits = hits.hits();
+		while (true) {
+			searchResponse = client.prepareSearchScroll(searchResponse.getScrollId()).setScroll(new TimeValue(600000))
+					.get();
+			if (searchResponse.getHits().getHits().length == 0) {
+				break;
+			}
+		}
+		return searchHits.length;
+	}
+
+	@Override
+	public int sumQTYandPrice(String index, String type, String price, String QTY, QueryBuilder queryBuilder) {
+		int sum = 0;
+		SearchResponse searchResponse = client.prepareSearch(index).setTypes(type).setQuery(queryBuilder)
+				.setSearchType(SearchType.DEFAULT).setScroll(new TimeValue(60000)).setSize(1000).get();
+		SearchHits hits = searchResponse.getHits();
+		SearchHit[] searchHits = hits.hits();
+		while (true) {
+			for (SearchHit s : searchHits) {
+				String result = (String) s.getSourceAsString().toString();
+				JSONObject jsonObject = JSONObject.fromObject(result);
+				sum += Integer.valueOf(jsonObject.get("QTY").toString())
+						* Integer.valueOf(jsonObject.get("Unit Price").toString());
+			}
+			searchResponse = client.prepareSearchScroll(searchResponse.getScrollId()).setScroll(new TimeValue(600000))
+					.get();
+			if (searchResponse.getHits().getHits().length == 0) {
+				break;
+			}
+		}
+		return sum;
+	}
+
+	public boolean extendid(String index, String type, String id) {
+		GetResponse response = client.prepareGet(index, type, id).get();
+		return response.isExists();
+	}
+
+}
